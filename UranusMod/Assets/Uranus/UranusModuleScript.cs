@@ -99,8 +99,9 @@ public class UranusModuleScript : MonoBehaviour
         targetValue = Bomb.GetSerialNumberNumbers().Sum();
         if (Bomb.QueryWidgets("volt", "").Count() != 0)
         {
-           Debug.LogFormat("[Uranus #{0}] Voltage meter detected with voltage {1}. Bypassing indicator calculations...", moduleId, "UNIMPLEMENTED");
-           targetValue += (int)double.Parse(Bomb.QueryWidgets("volt", "")[0].Substring(12).Replace("\"}", ""));
+           double voltage = double.Parse(Bomb.QueryWidgets("volt", "")[0].Substring(12).Replace("\"}", ""));
+           Debug.LogFormat("[Uranus #{0}] Voltage meter detected with voltage {1}. Bypassing indicator calculations...", moduleId, voltage);
+           targetValue += (int)voltage;
         }
         else
             foreach (string indicator in Bomb.GetIndicators())
@@ -261,6 +262,45 @@ public class UranusModuleScript : MonoBehaviour
         foreach (string direction in parameters)
         {
             int[] action = pairs[Array.IndexOf(directions, direction)];
+            PlanetButtons[action[0]].OnInteract();
+            PlanetButtons[action[1]].OnInteractEnded();
+            yield return new WaitForSeconds(0.4f);
+        }
+    }
+    IEnumerator TwitchHandleForcedSolve()
+    {
+        int attempts = 0;
+        solving:
+        int cap = attempts / 200 + 10;
+        int virtualCurrentCell = currentPosition;
+        int virtualCurrentValue = currentValue;
+        int virtualMoveCounter = 0;
+        List<string> path = new List<string>();
+        int virtualPrev = previousCell;
+        while (virtualCurrentValue != targetValue)
+        {
+            KeyValuePair<string, int> move = GetAdjacents(virtualCurrentCell).Where(x => x.Value != virtualPrev).PickRandom();
+            path.Add(move.Key);
+            virtualPrev = virtualCurrentCell;
+            virtualCurrentCell = move.Value;
+            virtualCurrentValue += (virtualMoveCounter % 2 == 0) ? ValueTable[virtualCurrentCell] : -1 * ValueTable[virtualCurrentCell];
+            virtualMoveCounter++;
+            attempts++;
+        }
+        Debug.Log("End value: " + virtualCurrentValue);
+        if (attempts > 200)
+        {
+            attempts = 0;
+            cap++;
+        }
+        if (path.Count > cap)
+        {
+            goto solving;
+        }
+        int[][] pairs = new int[][] { new int[] { 2, 0 }, new int[] { 2, 3 }, new int[] { 1, 3 }, new int[] { 0, 3 }, new int[] { 0, 2 }, new int[] { 0, 1 }, new int[] { 3, 1 }, new int[] { 3, 0 } };
+        foreach (string movement in path)
+        {
+            int[] action = pairs[Array.IndexOf(directions, movement)];
             PlanetButtons[action[0]].OnInteract();
             PlanetButtons[action[1]].OnInteractEnded();
             yield return new WaitForSeconds(0.4f);
