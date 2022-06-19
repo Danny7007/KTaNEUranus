@@ -13,17 +13,16 @@ public class UranusModuleScript : MonoBehaviour
     public KMAudio Audio;
 
     public KMSelectable HideButton;
-    public GameObject WholeThing;
-    public GameObject Background;
-    public GameObject Planet;
+    public GameObject WholeThing, Background, Planet;
     public Transform modTF, parentTF, childTF;
 
     public KMSelectable[] PlanetButtons;
+    public MeshRenderer[] highlightIndicators;
     public Material[] SphereColors;
 
     bool Visible = true;
-    bool isAnimating = false;
-    bool TwitchPlaysActive = false;
+    bool isAnimating;
+    bool TwitchPlaysActive;
 
     //Logging
     static int moduleIdCounter = 1;
@@ -32,18 +31,17 @@ public class UranusModuleScript : MonoBehaviour
 
     int? selected = null;
     int? highlighted = null;
-    float elapsed = 0f;
     int inputtedDirection = -1;
 
     string[] positions = new string[] { "top", "left", "bottom", "right" };
-    int[,] directionsTable = new int[,]
+    static int[,] directionsTable = new int[,]
     {
         {-1, 5, 4, 3 }, //row represents the first touched node
         {1, -1, 3, 2 }, //col represents the second touched node
         {0, 7, -1, 1 }, //0 is north, directions continue clockwise
         {7, 6, 5, -1 }  //-1 represents not doing anything
     };
-    int[] ValueTable = new int[]
+    static int[] ValueTable = new int[]
     {
         6,7,5,2,4,5,5,3,1,5,
         5,7,6,8,3,5,2,1,1,4, //We're basically shifting every even column upwards, and then treating left/right movement as jumping over a tile.
@@ -51,7 +49,6 @@ public class UranusModuleScript : MonoBehaviour
         2,1,4,0,1,4,4,0,1,1,
         8,5,4,8,5,4,7,7,6,2
     };
-    int[] offsets =       { -10, -9,    2,   1,   10,   9,   -2,   -1  };
     string[] directions = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
     string[] directionNames = { "North", "Northeast", "East", "Southeast", "South", "Southwest", "West", "Northwest" };
     Vector3[] axes = { new Vector3(1, 0, 0), new Vector3(1, -1, 0), new Vector3(0, -1, 0), new Vector3(-1, -1, 0), new Vector3(-1, 0, 0), new Vector3(-1, 1, 0), new Vector3(0, 1, 0), new Vector3(1, 1, 0) };
@@ -69,8 +66,12 @@ public class UranusModuleScript : MonoBehaviour
             int pos = Array.IndexOf(PlanetButtons, PlanetButton);
             PlanetButton.OnInteract += delegate () { selected = pos; return false; };
             PlanetButton.OnInteractEnded += delegate () { Release(pos); };
-            PlanetButton.OnHighlight += delegate () { highlighted = pos; };
-            PlanetButton.OnHighlightEnded += delegate () { highlighted = null; };
+            PlanetButton.OnHighlight += delegate () { highlighted = pos; highlightIndicators[pos].enabled = true; };
+            PlanetButton.OnHighlightEnded += delegate () {
+                if (pos != selected)
+                    highlightIndicators[pos].enabled = false;
+                highlighted = null; 
+            };
         }
         HideButton.OnInteract += delegate () { StartCoroutine(HidePlanet()); return false; };
     }
@@ -129,9 +130,11 @@ public class UranusModuleScript : MonoBehaviour
     void Release(int pos)
     {
         if (moduleSolved) return;
-        if (Application.isEditor || TwitchPlaysActive) highlighted = pos;
+        if (Application.isEditor || TwitchPlaysActive) 
+            highlighted = pos;
         if (selected != null && highlighted != null && selected != highlighted)
         {
+            highlightIndicators[selected.Value].enabled = false;
             inputtedDirection = directionsTable[(int)selected, (int)highlighted];
             Debug.LogFormat("[Uranus #{0}] You dragged from the {1} node to the {2} node. Rolling {3}", moduleId, positions[(int)selected], positions[(int)highlighted], directionNames[inputtedDirection]);
             MoveGrid(inputtedDirection);
@@ -269,41 +272,62 @@ public class UranusModuleScript : MonoBehaviour
     }
     IEnumerator TwitchHandleForcedSolve()
     {
-        int attempts = 0;
-        solving:
-        int cap = attempts / 200 + 10;
-        int virtualCurrentCell = currentPosition;
-        int virtualCurrentValue = currentValue;
-        int virtualMoveCounter = 0;
+        yield break;
+    }
+    private List<string> FindPath()
+    {
+        Queue<QueueItem> q = new Queue<QueueItem>();
+        List<Movement> allMoves = new List<Movement>();
+        q.Enqueue(new QueueItem(currentPosition, previousCell, currentValue, moveCounter % 2 == 1));
+        while (q.Count > 0)
+        {
+            QueueItem cur = q.Dequeue();
+            foreach (KeyValuePair<string, int> movement in GetAdjacents(cur.cell))
+            {
+                int newCell = movement.Value;
+                if (newCell != cur.prevCell)
+                {
+                    int newScore = cur.subtract ? cur.score - ValueTable[newCell] : cur.score + ValueTable[newCell];
+                    q.Enqueue(new QueueItem(newCell, cur.cell, newScore, !cur.subtract));
+                    allMoves.Add(new Movement(cur.cell, newCell, movement.Key, newScore));
+                }
+            }
+            if (cur.score == targetValue)
+                break;
+        }
+        Movement lastMove = allMoves.First(x => x.score == targetValue);
         List<string> path = new List<string>();
-        int virtualPrev = previousCell;
-        while (virtualCurrentValue != targetValue)
+        while (lastMove.start != currentPosition)
         {
-            KeyValuePair<string, int> move = GetAdjacents(virtualCurrentCell).Where(x => x.Value != virtualPrev).PickRandom();
-            path.Add(move.Key);
-            virtualPrev = virtualCurrentCell;
-            virtualCurrentCell = move.Value;
-            virtualCurrentValue += (virtualMoveCounter % 2 == 0) ? ValueTable[virtualCurrentCell] : -1 * ValueTable[virtualCurrentCell];
-            virtualMoveCounter++;
-            attempts++;
+            lastMove = allMoves.First(x => x.end == lastMove.start);
+            path += lastMove.direction;
         }
-        Debug.Log("End value: " + virtualCurrentValue);
-        if (attempts > 200)
-        {
-            attempts = 0;
-            cap++;
-        }
-        if (path.Count > cap)
-        {
-            goto solving;
-        }
-        int[][] pairs = new int[][] { new int[] { 2, 0 }, new int[] { 2, 3 }, new int[] { 1, 3 }, new int[] { 0, 3 }, new int[] { 0, 2 }, new int[] { 0, 1 }, new int[] { 3, 1 }, new int[] { 3, 0 } };
-        foreach (string movement in path)
-        {
-            int[] action = pairs[Array.IndexOf(directions, movement)];
-            PlanetButtons[action[0]].OnInteract();
-            PlanetButtons[action[1]].OnInteractEnded();
-            yield return new WaitForSeconds(0.4f);
-        }
+        return path.Reverse().Join("");
+    }
+}
+public struct QueueItem
+{
+    public int cell, prevCell, score;
+    public bool subtract;
+
+    public QueueItem(int cell, int prevCell, int score, bool subtract)
+    {
+        this.cell = cell;
+        this.prevCell = prevCell;
+        this.score = score;
+        this.subtract = subtract;
+    }
+}
+public class Movement
+{
+    public int start, end, score;
+    public string direction;
+    public Movement prev = null;
+    public Movement(int start, int end, string direction, int score)
+    {
+        this.start = start;
+        this.end = end;
+        this.direction = direction;
+        this.score = score;
     }
 }
